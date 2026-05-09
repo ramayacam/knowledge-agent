@@ -322,16 +322,45 @@ if prompt := st.chat_input("Ask about any Aspire Cloud module..."):
     with st.chat_message("assistant"):
         client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
 
-        with st.spinner("Checking documentation..."):
-            with client.messages.stream(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=1024,
-                system=system_prompt,
-                messages=st.session_state.messages,
-            ) as stream:
-                response_text = st.write_stream(stream.text_stream)
+        try:
+            with st.spinner("Checking documentation..."):
+                with client.messages.stream(
+                    model="claude-haiku-4-5-20251001",
+                    max_tokens=1024,
+                    system=system_prompt,
+                    messages=st.session_state.messages,
+                ) as stream:
+                    response_text = st.write_stream(stream.text_stream)
 
-    st.session_state.messages.append({"role": "assistant", "content": response_text})
+            st.session_state.messages.append({"role": "assistant", "content": response_text})
+
+        except anthropic.RateLimitError:
+            response_text = "⏳ The system is temporarily busy. Please wait a moment and try again."
+            st.warning(response_text)
+            st.session_state.messages.pop()  # Remove the user message so they can retry
+
+        except anthropic.AuthenticationError:
+            response_text = "🔑 There's a configuration issue. Please contact your administrator."
+            st.error(response_text)
+            st.session_state.messages.pop()
+
+        except anthropic.APIConnectionError:
+            response_text = "🌐 Couldn't connect to the server. Please check your internet connection and try again."
+            st.warning(response_text)
+            st.session_state.messages.pop()
+
+        except anthropic.APIStatusError as e:
+            if e.status_code == 529:
+                response_text = "🔧 The service is temporarily undergoing maintenance. Please try again in a few minutes."
+            else:
+                response_text = "⚠️ Something unexpected happened. Please try again. If the issue persists, contact your administrator."
+            st.warning(response_text)
+            st.session_state.messages.pop()
+
+        except Exception:
+            response_text = "⚠️ Something unexpected happened. Please try again. If the issue persists, contact your administrator."
+            st.warning(response_text)
+            st.session_state.messages.pop()
 
 # ── Clear conversation button ────────────────────────────────────────────────
 if st.session_state.messages:
