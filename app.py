@@ -1,5 +1,6 @@
 import streamlit as st
 import anthropic
+import base64
 from pathlib import Path
 
 # ── Page config ──────────────────────────────────────────────────────────────
@@ -8,6 +9,20 @@ st.set_page_config(
     page_icon="☁️",
     layout="centered",
 )
+
+# ── Load logo as base64 (so it embeds in HTML) ──────────────────────────────
+@st.cache_resource
+def load_logo():
+    """Load the CAM logo SVG and encode it for inline HTML embedding."""
+    logo_path = Path("assets/cam-logo.svg")
+    if logo_path.exists():
+        with open(logo_path, "r", encoding="utf-8") as f:
+            svg = f.read()
+        b64 = base64.b64encode(svg.encode("utf-8")).decode("utf-8")
+        return f"data:image/svg+xml;base64,{b64}"
+    return None
+
+logo_data = load_logo()
 
 # ── Custom styles with company palette ───────────────────────────────────────
 st.markdown("""
@@ -23,12 +38,32 @@ st.markdown("""
     .main-header {
         background: linear-gradient(135deg, #003A49 0%, #0087B4 100%);
         color: white;
-        padding: 1.5rem 2rem;
+        padding: 1.75rem 2rem;
         border-radius: 12px;
         margin-bottom: 1.5rem;
+        box-shadow: 0 4px 12px rgba(0, 58, 73, 0.15);
     }
-    .main-header h1 { margin: 0; font-size: 1.5rem; font-weight: 700; }
-    .main-header p  { margin: 0.25rem 0 0; opacity: 0.8; font-size: 0.9rem; }
+    .main-header-row {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+    }
+    .main-header img {
+        height: 48px;
+        width: auto;
+        flex-shrink: 0;
+    }
+    .main-header h1 {
+        margin: 0;
+        font-size: 1.5rem;
+        font-weight: 700;
+        line-height: 1.2;
+    }
+    .main-header p {
+        margin: 0.25rem 0 0;
+        opacity: 0.85;
+        font-size: 0.9rem;
+    }
 
     .module-badge {
         display: inline-block;
@@ -36,23 +71,63 @@ st.markdown("""
         border: 1px solid #FEC00D;
         color: #FEC00D;
         border-radius: 20px;
-        padding: 2px 10px;
+        padding: 3px 12px;
         font-size: 0.75rem;
         margin: 2px;
+        font-weight: 500;
     }
 
-    #MainMenu { visibility: hidden; }
-    footer     { visibility: hidden; }
-    header     { visibility: hidden; }
+    /* Suggested question buttons */
+    .suggestions-container {
+        margin: 1rem 0 1.5rem;
+    }
+    .suggestions-title {
+        font-size: 0.85rem;
+        color: #5F6B73;
+        margin-bottom: 0.5rem;
+        font-weight: 500;
+    }
 
-    .stButton button {
+    /* Streamlit button override for suggestions */
+    div[data-testid="column"] .stButton button {
+        background-color: #FFFFFF !important;
+        color: #003A49 !important;
+        border: 1px solid #00A3E0 !important;
+        border-radius: 10px !important;
+        font-weight: 500 !important;
+        text-align: left !important;
+        padding: 0.75rem 1rem !important;
+        height: auto !important;
+        white-space: normal !important;
+        line-height: 1.4 !important;
+        font-size: 0.85rem !important;
+        transition: all 0.2s ease !important;
+    }
+    div[data-testid="column"] .stButton button:hover {
+        background-color: #00A3E0 !important;
+        color: white !important;
+        border-color: #0087B4 !important;
+        transform: translateY(-1px);
+        box-shadow: 0 2px 8px rgba(0, 163, 224, 0.25);
+    }
+
+    /* Default Streamlit button (Enter, New conversation) */
+    .stButton button[kind="primary"],
+    .stButton button[kind="secondary"] {
         background-color: #00A3E0;
         color: white;
         border: none;
         border-radius: 8px;
         font-weight: 600;
     }
-    .stButton button:hover { background-color: #0087B4; }
+    .stButton button[kind="primary"]:hover,
+    .stButton button[kind="secondary"]:hover {
+        background-color: #0087B4;
+    }
+
+    #MainMenu { visibility: hidden; }
+    footer    { visibility: hidden; }
+    header    { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -65,10 +140,16 @@ if ACCESS_KEY:
         st.session_state.authenticated = False
 
     if not st.session_state.authenticated:
-        st.markdown("""
+        logo_html = f'<img src="{logo_data}" alt="CAM" />' if logo_data else '☁️'
+        st.markdown(f"""
         <div class="main-header">
-            <h1>☁️ CAM · Aspire Cloud Knowledge Agent</h1>
-            <p>Private access — authorized personnel only</p>
+            <div class="main-header-row">
+                {logo_html}
+                <div>
+                    <h1>Aspire Cloud Knowledge Agent</h1>
+                    <p>Private access — authorized personnel only</p>
+                </div>
+            </div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -105,11 +186,9 @@ def build_system_prompt(knowledge: dict) -> str:
     if not knowledge:
         return "You are a helpful assistant."
 
-    # Separate company context from knowledge documents
     company_context = knowledge.get("company-context", "")
     knowledge_docs = {k: v for k, v in knowledge.items() if k != "company-context"}
 
-    # Build the documentation section
     docs_section = "\n\n".join([
         f"## Document: {name}\n\n{content}"
         for name, content in knowledge_docs.items()
@@ -282,22 +361,82 @@ Guiding question: After reading my response, does the user know exactly what to 
 """
 
 
+# ── Suggested questions to help users get started ────────────────────────────
+SUGGESTED_QUESTIONS = [
+    "How do I create a new work ticket?",
+    "What's the difference between Contract and Work Order?",
+    "How do I complete a work ticket?",
+    "Explain Fixed Payment vs T&M invoice types",
+]
+
+
+def send_message(prompt: str):
+    """Send a message to Claude and stream the response."""
+    st.session_state.messages.append({"role": "user", "content": prompt})
+
+    client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
+
+    try:
+        with client.messages.stream(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1024,
+            system=system_prompt,
+            messages=st.session_state.messages,
+        ) as stream:
+            response_text = ""
+            for text in stream.text_stream:
+                response_text += text
+
+        st.session_state.messages.append({"role": "assistant", "content": response_text})
+
+    except anthropic.RateLimitError:
+        st.session_state.messages.pop()
+        st.session_state.error_message = "⏳ The system is temporarily busy. Please wait a moment and try again."
+
+    except anthropic.AuthenticationError:
+        st.session_state.messages.pop()
+        st.session_state.error_message = "🔑 There's a configuration issue. Please contact your administrator."
+
+    except anthropic.APIConnectionError:
+        st.session_state.messages.pop()
+        st.session_state.error_message = "🌐 Couldn't connect to the server. Please check your internet connection and try again."
+
+    except anthropic.APIStatusError as e:
+        st.session_state.messages.pop()
+        if e.status_code == 529:
+            st.session_state.error_message = "🔧 The service is temporarily undergoing maintenance. Please try again in a few minutes."
+        else:
+            st.session_state.error_message = "⚠️ Something unexpected happened. Please try again."
+
+    except Exception:
+        st.session_state.messages.pop()
+        st.session_state.error_message = "⚠️ Something unexpected happened. Please try again. If the issue persists, contact your administrator."
+
+
 # ── Main UI ──────────────────────────────────────────────────────────────────
 knowledge = load_knowledge_base()
 system_prompt = build_system_prompt(knowledge)
 
-# Header with module badges (exclude support files from display)
+# Header with logo + module badges
 HIDDEN_FROM_BADGES = {"company-context", "knowledge-base", "custom-instructions"}
 display_modules = {k: v for k, v in knowledge.items() if k not in HIDDEN_FROM_BADGES}
 modules_html = "".join([
     f'<span class="module-badge">{name}</span>'
     for name in display_modules.keys()
 ])
+
+logo_html = f'<img src="{logo_data}" alt="CAM" />' if logo_data else ''
+
 st.markdown(f"""
 <div class="main-header">
-    <h1>☁️ CAM · Aspire Cloud Knowledge Agent</h1>
-    <p>Ask anything about the Aspire Cloud modules</p>
-    <div style="margin-top: 0.75rem">{modules_html}</div>
+    <div class="main-header-row">
+        {logo_html}
+        <div>
+            <h1>Aspire Cloud Knowledge Agent</h1>
+            <p>Ask anything about the Aspire Cloud modules</p>
+        </div>
+    </div>
+    <div style="margin-top: 1rem">{modules_html}</div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -305,66 +444,59 @@ if not knowledge:
     st.warning("Add your .md files to the `docs/` folder to activate the agent.")
     st.stop()
 
-# ── Conversation history ─────────────────────────────────────────────────────
+# ── Initialize session state ─────────────────────────────────────────────────
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "error_message" not in st.session_state:
+    st.session_state.error_message = None
+if "pending_question" not in st.session_state:
+    st.session_state.pending_question = None
 
+# ── Suggested questions (only show when no conversation yet) ─────────────────
+if not st.session_state.messages and not st.session_state.pending_question:
+    st.markdown('<div class="suggestions-title">💡 Try asking:</div>', unsafe_allow_html=True)
+    cols = st.columns(2)
+    for i, question in enumerate(SUGGESTED_QUESTIONS):
+        with cols[i % 2]:
+            if st.button(question, key=f"suggest_{i}", use_container_width=True):
+                st.session_state.pending_question = question
+                st.rerun()
+
+# ── Show error message if any ────────────────────────────────────────────────
+if st.session_state.error_message:
+    st.warning(st.session_state.error_message)
+    st.session_state.error_message = None
+
+# ── Conversation history ─────────────────────────────────────────────────────
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# ── User input ───────────────────────────────────────────────────────────────
-if prompt := st.chat_input("Ask about any Aspire Cloud module..."):
+# ── Process pending question from suggestion button ──────────────────────────
+if st.session_state.pending_question:
+    prompt = st.session_state.pending_question
+    st.session_state.pending_question = None
 
-    st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
+        with st.spinner("Checking documentation..."):
+            send_message(prompt)
+    st.rerun()
 
-        try:
-            with st.spinner("Checking documentation..."):
-                with client.messages.stream(
-                    model="claude-haiku-4-5-20251001",
-                    max_tokens=1024,
-                    system=system_prompt,
-                    messages=st.session_state.messages,
-                ) as stream:
-                    response_text = st.write_stream(stream.text_stream)
+# ── User text input ──────────────────────────────────────────────────────────
+if prompt := st.chat_input("Ask about any Aspire Cloud module..."):
+    with st.chat_message("user"):
+        st.markdown(prompt)
 
-            st.session_state.messages.append({"role": "assistant", "content": response_text})
-
-        except anthropic.RateLimitError:
-            response_text = "⏳ The system is temporarily busy. Please wait a moment and try again."
-            st.warning(response_text)
-            st.session_state.messages.pop()  # Remove the user message so they can retry
-
-        except anthropic.AuthenticationError:
-            response_text = "🔑 There's a configuration issue. Please contact your administrator."
-            st.error(response_text)
-            st.session_state.messages.pop()
-
-        except anthropic.APIConnectionError:
-            response_text = "🌐 Couldn't connect to the server. Please check your internet connection and try again."
-            st.warning(response_text)
-            st.session_state.messages.pop()
-
-        except anthropic.APIStatusError as e:
-            if e.status_code == 529:
-                response_text = "🔧 The service is temporarily undergoing maintenance. Please try again in a few minutes."
-            else:
-                response_text = "⚠️ Something unexpected happened. Please try again. If the issue persists, contact your administrator."
-            st.warning(response_text)
-            st.session_state.messages.pop()
-
-        except Exception:
-            response_text = "⚠️ Something unexpected happened. Please try again. If the issue persists, contact your administrator."
-            st.warning(response_text)
-            st.session_state.messages.pop()
+    with st.chat_message("assistant"):
+        with st.spinner("Checking documentation..."):
+            send_message(prompt)
+    st.rerun()
 
 # ── Clear conversation button ────────────────────────────────────────────────
 if st.session_state.messages:
-    if st.button("🗑️  New conversation", use_container_width=False):
+    if st.button("🗑️  New conversation"):
         st.session_state.messages = []
         st.rerun()
