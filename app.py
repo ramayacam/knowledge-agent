@@ -286,8 +286,9 @@ Guiding question: After reading my response, does the user know exactly what to 
 knowledge = load_knowledge_base()
 system_prompt = build_system_prompt(knowledge)
 
-# Header with module badges (exclude company-context from display)
-display_modules = {k: v for k, v in knowledge.items() if k != "company-context"}
+# Header with module badges (exclude support files from display)
+HIDDEN_FROM_BADGES = {"company-context", "knowledge-base", "custom-instructions"}
+display_modules = {k: v for k, v in knowledge.items() if k not in HIDDEN_FROM_BADGES}
 modules_html = "".join([
     f'<span class="module-badge">{name}</span>'
     for name in display_modules.keys()
