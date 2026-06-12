@@ -297,8 +297,9 @@ After every response ask yourself: does the user know exactly what to do next?
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-# Sonnet has higher TPM limits than Haiku and better response quality.
-MODEL = "claude-sonnet-4-6"
+# Haiku has higher TPM limits than Sonnet on Tier 1 (50K vs 30K input TPM)
+# and is more cost-efficient for short knowledge agent responses.
+MODEL = "claude-haiku-4-5-20251001"
 
 # 2048 avoids truncated responses. You only pay for tokens actually generated,
 # so raising this limit doesn't increase cost when answers are short.
