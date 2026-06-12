@@ -1,3 +1,4 @@
+import time
 import streamlit as st
 import anthropic
 import base64
@@ -181,10 +182,17 @@ def load_knowledge_base():
     return knowledge
 
 
-def build_system_prompt(knowledge: dict) -> str:
-    """Build the system prompt with all context documents and agent instructions."""
+def build_system_prompt(knowledge: dict) -> list:
+    """
+    Build the system prompt as a list of content blocks with prompt caching.
+
+    The knowledge base (large, static text) is marked with cache_control so
+    Anthropic caches it after the first call. Subsequent calls in the same
+    session reuse the cache and consume almost no input TPM, which is the
+    primary fix for the rate limit errors.
+    """
     if not knowledge:
-        return "You are a helpful assistant."
+        return [{"type": "text", "text": "You are a helpful assistant."}]
 
     company_context = knowledge.get("company-context", "")
     knowledge_docs = {k: v for k, v in knowledge.items() if k != "company-context"}
@@ -199,20 +207,20 @@ def build_system_prompt(knowledge: dict) -> str:
         company_section = f"""
 ## COMPANY CONTEXT
 
-The following is context about the company using this system. Use it to provide 
-relevant, accurate examples specific to the company's actual business operations 
+The following is context about the company using this system. Use it to provide
+relevant, accurate examples specific to the company's actual business operations
 when answering questions about Aspire Cloud.
 
 {company_context}
 """
 
-    return f"""## YOUR ROLE
+    instructions = """## YOUR ROLE
 
-You are an expert assistant for **Aspire Cloud** (https://cloud.youraspire.com/), 
-a management system for landscaping and maintenance companies. Your goal is to help 
+You are an expert assistant for **Aspire Cloud** (https://cloud.youraspire.com/),
+a management system for landscaping and maintenance companies. Your goal is to help
 users understand and use the system effectively.
 
-You work for **CAM Property Services** and your answers should be relevant to their 
+You work for **CAM Property Services** and your answers should be relevant to their
 operations when applicable.
 
 ---
@@ -240,128 +248,73 @@ operations when applicable.
 If you don't know the answer or it's not in your knowledge base:
 - Say it clearly: "I don't have information about that in my knowledge base"
 - DON'T make up answers
-- Suggest alternatives: "What I can tell you is..." or "I recommend checking the official documentation at https://guide.youraspire.com/"
-
----
-
-## KNOWLEDGE BASE STRUCTURE
-
-Your knowledge is organized in these documents:
-
-### knowledge-base.md
-The master index. Consult it when:
-- You need to understand system hierarchy
-- You don't know which module to look in
-- You want a quick overview
-
-### invoices-module.md (Work Tickets)
-Everything about work tickets. Consult it when asked about:
-- Ticket statuses (Open, Scheduled, Complete, etc.)
-- Completing or cancelling tickets
-- Bulk actions
-- Dynamic Forecasting
-- Multi-year contracts
-
-### opportunities-module.md
-Everything about opportunities. Consult it when asked about:
-- Creating opportunities
-- Opportunity types (Contracts vs Work Orders)
-- Invoice types (Fixed Payment, Per Service, T&M, etc.)
-- Creating estimates
-- Payment schedules
-- Change orders
-- Contract renewals
-- Job Dashboard
-
----
-
-## COMMON QUESTION PATTERNS
-
-### "How do I do X?"
-1. Identify relevant module
-2. Find specific process
-3. Respond with clear steps
-4. Mention permissions if applicable
-
-### "What is X?"
-1. Define in simple language
-2. Give practical example
-3. Explain when it's used
-
-### "What's the difference between X and Y?"
-1. Define both terms
-2. Create comparison table
-3. Give examples of when to use each
-
-### "Why can't I do X?"
-1. Identify possible causes (missing permission, wrong status, system restriction)
-2. Explain the cause
-3. Give solution or alternative
+- Suggest alternatives: recommend checking https://guide.youraspire.com/
 
 ---
 
 ## RESPONSE FORMATTING
 
-**For short lists (2-3 items):** Write in prose.
-**For longer lists (4+ items):** Use bullets.
-**For comparisons:** Use tables.
-**For processes:** Use numbered steps.
-
----
-
-## CONTEXT HANDLING
-
-- Maintain conversation context across follow-up questions
-- Connect with what you already explained
-- Don't repeat everything from scratch
-- If context isn't clear, ask for clarification
+- Short lists (2-3 items): write inline as prose
+- Longer lists (4+ items): use bullets
+- Comparisons: use tables
+- Processes: use numbered steps
+- Keep responses as short as the question allows
 
 ---
 
 ## SPECIAL SITUATIONS
 
-### When Asked About Other Modules
-"My knowledge focuses on the Work Tickets and Opportunities modules. For [topic X], 
-I recommend checking the official documentation at https://guide.youraspire.com/ 
-or contacting Aspire support."
-
-### When Asked About Advanced Configuration
-"That configuration is done in Administration > [section]. For Administration changes, 
-you need System Administrator permissions. I recommend working with your system 
-administrator or checking: https://guide.youraspire.com/"
-
-### When You Identify Common Confusion
-"It seems you're confusing [X] with [Y]. Let me clarify..."
+- Outside scope: direct to https://guide.youraspire.com/
+- Admin config needed: mention System Administrator permissions required
+- Confusing two concepts: clarify the difference explicitly
 
 ---
 
 ## TONE AND STYLE
 
-- Professional but accessible: like a helpful colleague, not a robot
-- Patient: the same questions may be asked multiple times
-- Positive: focus on what CAN be done
-- Empathetic: acknowledge when something is confusing or complicated
-
----
-
-## REMEMBER
-
-Your goal is to empower the user to use Aspire effectively. It's not about showing 
-how much you know, but about making them understand and be able to act.
-
-Guiding question: After reading my response, does the user know exactly what to do?
-
----
-
-{company_section}
-
-## ASPIRE CLOUD DOCUMENTATION
-
-{docs_section}
+Professional but accessible. Patient. Focus on what CAN be done.
+After every response ask yourself: does the user know exactly what to do next?
 """
 
+    # Two content blocks:
+    # 1. Instructions (smaller, not cached — may change more often)
+    # 2. Knowledge base docs + company context (large, static — CACHED)
+    return [
+        {
+            "type": "text",
+            "text": instructions,
+        },
+        {
+            "type": "text",
+            "text": f"{company_section}\n\n## ASPIRE CLOUD DOCUMENTATION\n\n{docs_section}",
+            # cache_control tells Anthropic to cache everything up to this point.
+            # Cached tokens don't count against the input TPM limit, which is
+            # the root cause of the RateLimitErrors with the Free Tier 10K TPM cap.
+            "cache_control": {"type": "ephemeral"},
+        },
+    ]
 
-# ── Suggested questions to help users get started ────────────────────────────
+
+# ── Constants ────────────────────────────────────────────────────────────────
+
+# Sonnet has higher TPM limits than Haiku and better response quality.
+MODEL = "claude-sonnet-4-6"
+
+# 2048 avoids truncated responses. You only pay for tokens actually generated,
+# so raising this limit doesn't increase cost when answers are short.
+MAX_TOKENS = 2048
+
+# Keep only the last N messages in the conversation history sent to the API.
+# Older turns are dropped to prevent token accumulation across long sessions.
+# 10 messages = 5 back-and-forth exchanges, enough context for follow-ups.
+MAX_HISTORY = 10
+
+# Retry settings for transient rate limit errors.
+MAX_RETRIES = 3
+RETRY_BASE_DELAY = 2  # seconds; doubles each attempt (2 → 4 → 8)
+
+
+# ── Suggested questions ───────────────────────────────────────────────────────
 SUGGESTED_QUESTIONS = [
     "How do I create a new work ticket?",
     "What's the difference between Contract and Work Order?",
@@ -370,47 +323,84 @@ SUGGESTED_QUESTIONS = [
 ]
 
 
-def send_message(prompt: str):
-    """Send a message to Claude and stream the response."""
+# ── API call with retry + exponential backoff ────────────────────────────────
+def send_message(prompt: str, system_prompt: list):
+    """
+    Send a message to Claude with:
+    - Prompt caching on the system prompt (via content blocks built above)
+    - Conversation history limited to MAX_HISTORY messages
+    - Retry with exponential backoff on rate limit errors
+    """
     st.session_state.messages.append({"role": "user", "content": prompt})
+
+    # Trim history before sending: keep only the most recent MAX_HISTORY messages.
+    # This prevents token accumulation across long sessions while preserving
+    # enough context for follow-up questions.
+    trimmed_messages = st.session_state.messages[-MAX_HISTORY:]
 
     client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
 
-    try:
-        with client.messages.stream(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=1024,
-            system=system_prompt,
-            messages=st.session_state.messages,
-        ) as stream:
-            response_text = ""
-            for text in stream.text_stream:
-                response_text += text
+    for attempt in range(MAX_RETRIES):
+        try:
+            with client.messages.stream(
+                model=MODEL,
+                max_tokens=MAX_TOKENS,
+                system=system_prompt,
+                messages=trimmed_messages,
+            ) as stream:
+                response_text = ""
+                for text in stream.text_stream:
+                    response_text += text
 
-        st.session_state.messages.append({"role": "assistant", "content": response_text})
+            st.session_state.messages.append({"role": "assistant", "content": response_text})
+            return  # success — exit the retry loop
 
-    except anthropic.RateLimitError:
-        st.session_state.messages.pop()
-        st.session_state.error_message = "⏳ The system is temporarily busy. Please wait a moment and try again."
+        except anthropic.RateLimitError:
+            if attempt < MAX_RETRIES - 1:
+                # Exponential backoff: wait 2s, then 4s, then 8s before retrying.
+                # The spinner stays visible so the user knows the app is working.
+                delay = RETRY_BASE_DELAY * (2 ** attempt)
+                time.sleep(delay)
+                continue
+            # All retries exhausted
+            st.session_state.messages.pop()
+            st.session_state.error_message = (
+                "⏳ The system is temporarily busy. Please wait a moment and try again."
+            )
 
-    except anthropic.AuthenticationError:
-        st.session_state.messages.pop()
-        st.session_state.error_message = "🔑 There's a configuration issue. Please contact your administrator."
+        except anthropic.AuthenticationError:
+            st.session_state.messages.pop()
+            st.session_state.error_message = (
+                "🔑 There's a configuration issue. Please contact your administrator."
+            )
+            return
 
-    except anthropic.APIConnectionError:
-        st.session_state.messages.pop()
-        st.session_state.error_message = "🌐 Couldn't connect to the server. Please check your internet connection and try again."
+        except anthropic.APIConnectionError:
+            st.session_state.messages.pop()
+            st.session_state.error_message = (
+                "🌐 Couldn't connect to the server. Please check your internet connection and try again."
+            )
+            return
 
-    except anthropic.APIStatusError as e:
-        st.session_state.messages.pop()
-        if e.status_code == 529:
-            st.session_state.error_message = "🔧 The service is temporarily undergoing maintenance. Please try again in a few minutes."
-        else:
-            st.session_state.error_message = "⚠️ Something unexpected happened. Please try again."
+        except anthropic.APIStatusError as e:
+            st.session_state.messages.pop()
+            if e.status_code == 529:
+                st.session_state.error_message = (
+                    "🔧 The service is temporarily undergoing maintenance. Please try again in a few minutes."
+                )
+            else:
+                st.session_state.error_message = (
+                    "⚠️ Something unexpected happened. Please try again."
+                )
+            return
 
-    except Exception:
-        st.session_state.messages.pop()
-        st.session_state.error_message = "⚠️ Something unexpected happened. Please try again. If the issue persists, contact your administrator."
+        except Exception:
+            st.session_state.messages.pop()
+            st.session_state.error_message = (
+                "⚠️ Something unexpected happened. Please try again. "
+                "If the issue persists, contact your administrator."
+            )
+            return
 
 
 # ── Main UI ──────────────────────────────────────────────────────────────────
@@ -482,7 +472,7 @@ if st.session_state.pending_question:
 
     with st.chat_message("assistant"):
         with st.spinner("Checking documentation..."):
-            send_message(prompt)
+            send_message(prompt, system_prompt)
     st.rerun()
 
 # ── User text input ──────────────────────────────────────────────────────────
@@ -492,7 +482,7 @@ if prompt := st.chat_input("Ask about any Aspire Cloud module..."):
 
     with st.chat_message("assistant"):
         with st.spinner("Checking documentation..."):
-            send_message(prompt)
+            send_message(prompt, system_prompt)
     st.rerun()
 
 # ── Clear conversation button ────────────────────────────────────────────────
