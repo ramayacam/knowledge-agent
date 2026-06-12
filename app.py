@@ -453,15 +453,15 @@ if not st.session_state.messages and not st.session_state.pending_question:
                 st.session_state.pending_question = question
                 st.rerun()
 
-# ── Show error message if any ────────────────────────────────────────────────
-if st.session_state.error_message:
-    st.warning(st.session_state.error_message)
-    st.session_state.error_message = None
-
 # ── Conversation history ─────────────────────────────────────────────────────
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
+
+# ── Show error message if any (after history so it appears at the bottom) ────
+if st.session_state.error_message:
+    st.warning(st.session_state.error_message)
+    st.session_state.error_message = None
 
 # ── Process pending question from suggestion button ──────────────────────────
 if st.session_state.pending_question:
