@@ -11,10 +11,9 @@ st.set_page_config(
     layout="centered",
 )
 
-# ── Load logo as base64 (so it embeds in HTML) ──────────────────────────────
+# ── Load logo as base64 ──────────────────────────────────────────────────────
 @st.cache_resource
 def load_logo():
-    """Load the CAM logo SVG and encode it for inline HTML embedding."""
     logo_path = Path("assets/cam-logo.svg")
     if logo_path.exists():
         with open(logo_path, "r", encoding="utf-8") as f:
@@ -25,17 +24,9 @@ def load_logo():
 
 logo_data = load_logo()
 
-# ── Custom styles with company palette ───────────────────────────────────────
+# ── Custom styles ────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    :root {
-        --primary:   #003A49;
-        --accent:    #00A3E0;
-        --accent2:   #0087B4;
-        --highlight: #FEC00D;
-        --neutral:   #B3B3B3;
-    }
-
     .main-header {
         background: linear-gradient(135deg, #003A49 0%, #0087B4 100%);
         color: white;
@@ -44,27 +35,10 @@ st.markdown("""
         margin-bottom: 1.5rem;
         box-shadow: 0 4px 12px rgba(0, 58, 73, 0.15);
     }
-    .main-header-row {
-        display: flex;
-        align-items: center;
-        gap: 1rem;
-    }
-    .main-header img {
-        height: 48px;
-        width: auto;
-        flex-shrink: 0;
-    }
-    .main-header h1 {
-        margin: 0;
-        font-size: 1.5rem;
-        font-weight: 700;
-        line-height: 1.2;
-    }
-    .main-header p {
-        margin: 0.25rem 0 0;
-        opacity: 0.85;
-        font-size: 0.9rem;
-    }
+    .main-header-row { display: flex; align-items: center; gap: 1rem; }
+    .main-header img { height: 48px; width: auto; flex-shrink: 0; }
+    .main-header h1 { margin: 0; font-size: 1.5rem; font-weight: 700; line-height: 1.2; }
+    .main-header p  { margin: 0.25rem 0 0; opacity: 0.85; font-size: 0.9rem; }
 
     .module-badge {
         display: inline-block;
@@ -77,7 +51,6 @@ st.markdown("""
         margin: 2px;
         font-weight: 500;
     }
-
     .token-debug {
         background: #f0f8ff;
         border: 1px solid #00A3E0;
@@ -88,19 +61,8 @@ st.markdown("""
         margin-top: 0.5rem;
         font-family: monospace;
     }
+    .suggestions-title { font-size: 0.85rem; color: #5F6B73; margin-bottom: 0.5rem; font-weight: 500; }
 
-    /* Suggested question buttons */
-    .suggestions-container {
-        margin: 1rem 0 1.5rem;
-    }
-    .suggestions-title {
-        font-size: 0.85rem;
-        color: #5F6B73;
-        margin-bottom: 0.5rem;
-        font-weight: 500;
-    }
-
-    /* Streamlit button override for suggestions */
     div[data-testid="column"] .stButton button {
         background-color: #FFFFFF !important;
         color: #003A49 !important;
@@ -113,36 +75,17 @@ st.markdown("""
         white-space: normal !important;
         line-height: 1.4 !important;
         font-size: 0.85rem !important;
-        transition: all 0.2s ease !important;
     }
     div[data-testid="column"] .stButton button:hover {
         background-color: #00A3E0 !important;
         color: white !important;
         border-color: #0087B4 !important;
-        transform: translateY(-1px);
-        box-shadow: 0 2px 8px rgba(0, 163, 224, 0.25);
     }
-
-    /* Default Streamlit button (Enter, New conversation) */
-    .stButton button[kind="primary"],
-    .stButton button[kind="secondary"] {
-        background-color: #00A3E0;
-        color: white;
-        border: none;
-        border-radius: 8px;
-        font-weight: 600;
-    }
-    .stButton button[kind="primary"]:hover,
-    .stButton button[kind="secondary"]:hover {
-        background-color: #0087B4;
-    }
-
     #MainMenu { visibility: hidden; }
     footer    { visibility: hidden; }
     header    { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
-
 
 # ── Access protection ────────────────────────────────────────────────────────
 ACCESS_KEY = st.secrets.get("ACCESS_KEY", "")
@@ -174,38 +117,26 @@ if ACCESS_KEY:
                 st.error("Incorrect key. Contact your administrator.")
         st.stop()
 
-
 # ── Load markdown documents ──────────────────────────────────────────────────
 @st.cache_resource
 def load_knowledge_base():
-    """Load all .md files from the docs/ folder on startup."""
     docs_path = Path("docs")
     knowledge = {}
-
     if not docs_path.exists():
-        st.error("⚠️  'docs/' folder not found. Make sure to include your .md files.")
+        st.error("⚠️  'docs/' folder not found.")
         return {}
-
     for md_file in sorted(docs_path.glob("*.md")):
         with open(md_file, "r", encoding="utf-8") as f:
             knowledge[md_file.stem] = f.read()
-
     return knowledge
 
 
 def build_system_prompt(knowledge: dict) -> list:
-    """
-    Build the system prompt as a list of content blocks with prompt caching.
-
-    The knowledge base (large, static text) is marked with cache_control so
-    Anthropic caches it after the first call. Subsequent calls in the same
-    session reuse the cache and consume almost no input TPM.
-    """
     if not knowledge:
         return [{"type": "text", "text": "You are a helpful assistant."}]
 
     company_context = knowledge.get("company-context", "")
-    knowledge_docs = {k: v for k, v in knowledge.items() if k != "company-context"}
+    knowledge_docs  = {k: v for k, v in knowledge.items() if k != "company-context"}
 
     docs_section = "\n\n".join([
         f"## Document: {name}\n\n{content}"
@@ -217,73 +148,23 @@ def build_system_prompt(knowledge: dict) -> list:
         company_section = f"""
 ## COMPANY CONTEXT
 
-The following is context about the company using this system. Use it to provide
-relevant, accurate examples specific to the company's actual business operations
-when answering questions about Aspire Cloud.
-
 {company_context}
 """
 
     instructions = """## YOUR ROLE
 
-You are an expert assistant for **Aspire Cloud** (https://cloud.youraspire.com/),
-a management system for landscaping and maintenance companies. Your goal is to help
-users understand and use the system effectively.
-
-You work for **CAM Property Services** and your answers should be relevant to their
-operations when applicable.
-
----
+You are an expert assistant for **Aspire Cloud** (https://cloud.youraspire.com/).
+You work for **CAM Property Services**.
 
 ## RESPONSE PRINCIPLES
-
-### 1. Clarity Over Technical Jargon
-- Use plain and understandable language
-- Avoid unnecessary technical jargon
-- If you use a technical term, explain it briefly
-- Think of your audience as: managers, estimators, salespeople, administrators
-
-### 2. Conciseness
-- Short and direct responses
-- Get straight to the point
-- Don't give unnecessary information
-- If the question is simple, the answer should be simple
-
-### 3. Actionable Steps
-- When explaining processes, use clear numbered steps
-- Include prerequisites if any
+- Plain, understandable language
+- Short and direct — get to the point
+- Numbered steps for processes
 - Mention required permissions when relevant
+- If you don't know: say so and direct to https://guide.youraspire.com/
 
-### 4. Honesty About Limitations
-If you don't know the answer or it's not in your knowledge base:
-- Say it clearly: "I don't have information about that in my knowledge base"
-- DON'T make up answers
-- Suggest alternatives: recommend checking https://guide.youraspire.com/
-
----
-
-## RESPONSE FORMATTING
-
-- Short lists (2-3 items): write inline as prose
-- Longer lists (4+ items): use bullets
-- Comparisons: use tables
-- Processes: use numbered steps
-- Keep responses as short as the question allows
-
----
-
-## SPECIAL SITUATIONS
-
-- Outside scope: direct to https://guide.youraspire.com/
-- Admin config needed: mention System Administrator permissions required
-- Confusing two concepts: clarify the difference explicitly
-
----
-
-## TONE AND STYLE
-
-Professional but accessible. Patient. Focus on what CAN be done.
-After every response ask yourself: does the user know exactly what to do next?
+## FORMATTING
+- 2-3 items: prose  |  4+ items: bullets  |  comparisons: tables  |  processes: numbered steps
 """
 
     return [
@@ -294,26 +175,19 @@ After every response ask yourself: does the user know exactly what to do next?
         {
             "type": "text",
             "text": f"{company_section}\n\n## ASPIRE CLOUD DOCUMENTATION\n\n{docs_section}",
-            # cache_control tells Anthropic to cache everything up to this point.
-            # Cached tokens are billed at ~10% of normal input token cost.
             "cache_control": {"type": "ephemeral"},
         },
     ]
 
 
 # ── Constants ────────────────────────────────────────────────────────────────
-MODEL = "claude-haiku-4-5-20251001"
-MAX_TOKENS = 2048
-MAX_HISTORY = 10
-MAX_RETRIES = 3
-RETRY_BASE_DELAY = 2  # seconds; doubles each attempt (2 → 4 → 8)
+MODEL         = "claude-haiku-4-5-20251001"
+MAX_TOKENS    = 2048
+MAX_HISTORY   = 10
+MAX_RETRIES   = 3
+RETRY_BASE_DELAY = 2
+DEBUG_TOKENS  = st.secrets.get("DEBUG_TOKENS", True)
 
-# Set to True to show token usage after each response (useful for cost monitoring).
-# Set to False once you've confirmed caching is working correctly.
-DEBUG_TOKENS = st.secrets.get("DEBUG_TOKENS", True)
-
-
-# ── Suggested questions ───────────────────────────────────────────────────────
 SUGGESTED_QUESTIONS = [
     "How do I create a new work ticket?",
     "What's the difference between Contract and Work Order?",
@@ -321,58 +195,38 @@ SUGGESTED_QUESTIONS = [
     "Explain Fixed Payment vs T&M invoice types",
 ]
 
-
-# ── API call with retry + exponential backoff ────────────────────────────────
+# ── API call ─────────────────────────────────────────────────────────────────
 def send_message(prompt: str, system_prompt: list):
-    """
-    Send a message to Claude with:
-    - Prompt caching via the beta prompt_caching client (explicit beta header)
-    - Conversation history limited to MAX_HISTORY messages
-    - Retry with exponential backoff on rate limit errors
-    - Token usage logging to verify cache is working
-    """
     st.session_state.messages.append({"role": "user", "content": prompt})
-
     trimmed_messages = st.session_state.messages[-MAX_HISTORY:]
-
-    # Use beta.prompt_caching client to ensure the cache_control blocks
-    # are processed correctly. This adds the required beta header automatically.
     client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
 
     for attempt in range(MAX_RETRIES):
         try:
-            # ── Non-streaming call so we can read usage stats ──────────────
-            # We switch from stream() to create() here because the streaming
-            # response doesn't expose usage.cache_read_input_tokens easily.
-            # For typical knowledge agent responses this is fast enough.
-            response = client.beta.prompt_caching.messages.create(
+            # Use standard messages.create with extra_headers to enable
+            # prompt caching — compatible with all SDK versions >= 0.20
+            response = client.messages.create(
                 model=MODEL,
                 max_tokens=MAX_TOKENS,
                 system=system_prompt,
                 messages=trimmed_messages,
+                extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
             )
 
             response_text = response.content[0].text
 
-            # ── Token usage logging ────────────────────────────────────────
-            # cache_creation_input_tokens > 0 → cache was written (first call)
-            # cache_read_input_tokens > 0     → cache was hit (subsequent calls)
-            # If cache_read is always 0, caching is not working.
-            usage = response.usage
+            # Token usage logging
+            usage         = response.usage
             cache_created = getattr(usage, "cache_creation_input_tokens", 0) or 0
             cache_read    = getattr(usage, "cache_read_input_tokens", 0) or 0
             input_tokens  = getattr(usage, "input_tokens", 0) or 0
             output_tokens = getattr(usage, "output_tokens", 0) or 0
 
             print(
-                f"[TOKEN USAGE] "
-                f"input={input_tokens} | "
-                f"output={output_tokens} | "
-                f"cache_created={cache_created} | "
-                f"cache_read={cache_read}"
+                f"[TOKENS] input={input_tokens} | output={output_tokens} | "
+                f"cache_created={cache_created} | cache_read={cache_read}"
             )
 
-            # Store usage in session state so we can display it in the UI
             st.session_state.last_token_usage = {
                 "input": input_tokens,
                 "output": output_tokens,
@@ -381,7 +235,7 @@ def send_message(prompt: str, system_prompt: list):
             }
 
             st.session_state.messages.append({"role": "assistant", "content": response_text})
-            return  # success — exit the retry loop
+            return
 
         except anthropic.RateLimitError:
             if attempt < MAX_RETRIES - 1:
@@ -396,14 +250,14 @@ def send_message(prompt: str, system_prompt: list):
         except anthropic.AuthenticationError:
             st.session_state.messages.pop()
             st.session_state.error_message = (
-                "🔑 There's a configuration issue. Please contact your administrator."
+                "🔑 Configuration issue. Please contact your administrator."
             )
             return
 
         except anthropic.APIConnectionError:
             st.session_state.messages.pop()
             st.session_state.error_message = (
-                "🌐 Couldn't connect to the server. Please check your internet connection and try again."
+                "🌐 Connection error. Please check your internet and try again."
             )
             return
 
@@ -411,35 +265,29 @@ def send_message(prompt: str, system_prompt: list):
             st.session_state.messages.pop()
             if e.status_code == 529:
                 st.session_state.error_message = (
-                    "🔧 The service is temporarily undergoing maintenance. Please try again in a few minutes."
+                    "🔧 Service under maintenance. Please try again in a few minutes."
                 )
             else:
-                st.session_state.error_message = (
-                    "⚠️ Something unexpected happened. Please try again."
-                )
+                st.session_state.error_message = f"⚠️ API error {e.status_code}. Please try again."
             return
 
-        except Exception:
+        except Exception as e:
             st.session_state.messages.pop()
-            st.session_state.error_message = (
-                "⚠️ Something unexpected happened. Please try again. "
-                "If the issue persists, contact your administrator."
-            )
+            # Show the real error message to help diagnose
+            st.session_state.error_message = f"⚠️ Unexpected error: {str(e)}"
             return
 
 
 # ── Main UI ──────────────────────────────────────────────────────────────────
-knowledge = load_knowledge_base()
+knowledge     = load_knowledge_base()
 system_prompt = build_system_prompt(knowledge)
 
-# Header with logo + module badges
 HIDDEN_FROM_BADGES = {"company-context", "knowledge-base", "custom-instructions"}
-display_modules = {k: v for k, v in knowledge.items() if k not in HIDDEN_FROM_BADGES}
+display_modules    = {k: v for k, v in knowledge.items() if k not in HIDDEN_FROM_BADGES}
 modules_html = "".join([
     f'<span class="module-badge">{name}</span>'
     for name in display_modules.keys()
 ])
-
 logo_html = f'<img src="{logo_data}" alt="CAM" />' if logo_data else ''
 
 st.markdown(f"""
@@ -459,17 +307,13 @@ if not knowledge:
     st.warning("Add your .md files to the `docs/` folder to activate the agent.")
     st.stop()
 
-# ── Initialize session state ─────────────────────────────────────────────────
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "error_message" not in st.session_state:
-    st.session_state.error_message = None
-if "pending_question" not in st.session_state:
-    st.session_state.pending_question = None
-if "last_token_usage" not in st.session_state:
-    st.session_state.last_token_usage = None
+# ── Session state ────────────────────────────────────────────────────────────
+if "messages"          not in st.session_state: st.session_state.messages          = []
+if "error_message"     not in st.session_state: st.session_state.error_message     = None
+if "pending_question"  not in st.session_state: st.session_state.pending_question  = None
+if "last_token_usage"  not in st.session_state: st.session_state.last_token_usage  = None
 
-# ── Suggested questions (only show when no conversation yet) ─────────────────
+# ── Suggested questions ──────────────────────────────────────────────────────
 if not st.session_state.messages and not st.session_state.pending_question:
     st.markdown('<div class="suggestions-title">💡 Try asking:</div>', unsafe_allow_html=True)
     cols = st.columns(2)
@@ -484,13 +328,19 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# ── Token usage debug panel (shown after last assistant message) ──────────────
+# ── Token debug panel ────────────────────────────────────────────────────────
 if DEBUG_TOKENS and st.session_state.last_token_usage:
     u = st.session_state.last_token_usage
-    cache_status = "✅ cache HIT" if u["cache_read"] > 0 else ("🔄 cache WRITTEN" if u["cache_created"] > 0 else "❌ no cache")
+    if u["cache_read"] > 0:
+        cache_status = "✅ cache HIT"
+    elif u["cache_created"] > 0:
+        cache_status = "🔄 cache WRITTEN"
+    else:
+        cache_status = "❌ no cache"
+
     st.markdown(f"""
     <div class="token-debug">
-        🔍 <strong>Token usage</strong> &nbsp;|&nbsp;
+        🔍 <b>Token usage</b> &nbsp;|&nbsp;
         input: {u['input']:,} &nbsp;|&nbsp;
         output: {u['output']:,} &nbsp;|&nbsp;
         cache_created: {u['cache_created']:,} &nbsp;|&nbsp;
@@ -499,35 +349,33 @@ if DEBUG_TOKENS and st.session_state.last_token_usage:
     </div>
     """, unsafe_allow_html=True)
 
-# ── Show error message if any ─────────────────────────────────────────────────
+# ── Error message ────────────────────────────────────────────────────────────
 if st.session_state.error_message:
     st.warning(st.session_state.error_message)
     st.session_state.error_message = None
 
-# ── Process pending question from suggestion button ──────────────────────────
+# ── Pending question ─────────────────────────────────────────────────────────
 if st.session_state.pending_question:
     prompt = st.session_state.pending_question
     st.session_state.pending_question = None
 
     with st.chat_message("user"):
         st.markdown(prompt)
-
     with st.chat_message("assistant"):
         with st.spinner("Checking documentation..."):
             send_message(prompt, system_prompt)
     st.rerun()
 
-# ── User text input ──────────────────────────────────────────────────────────
+# ── Chat input ───────────────────────────────────────────────────────────────
 if prompt := st.chat_input("Ask about any Aspire Cloud module..."):
     with st.chat_message("user"):
         st.markdown(prompt)
-
     with st.chat_message("assistant"):
         with st.spinner("Checking documentation..."):
             send_message(prompt, system_prompt)
     st.rerun()
 
-# ── Clear conversation button ────────────────────────────────────────────────
+# ── Clear button ─────────────────────────────────────────────────────────────
 if st.session_state.messages:
     if st.button("🗑️  New conversation"):
         st.session_state.messages = []
