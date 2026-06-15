@@ -78,6 +78,17 @@ st.markdown("""
         font-weight: 500;
     }
 
+    .token-debug {
+        background: #f0f8ff;
+        border: 1px solid #00A3E0;
+        border-radius: 8px;
+        padding: 0.5rem 1rem;
+        font-size: 0.75rem;
+        color: #003A49;
+        margin-top: 0.5rem;
+        font-family: monospace;
+    }
+
     /* Suggested question buttons */
     .suggestions-container {
         margin: 1rem 0 1.5rem;
@@ -188,8 +199,7 @@ def build_system_prompt(knowledge: dict) -> list:
 
     The knowledge base (large, static text) is marked with cache_control so
     Anthropic caches it after the first call. Subsequent calls in the same
-    session reuse the cache and consume almost no input TPM, which is the
-    primary fix for the rate limit errors.
+    session reuse the cache and consume almost no input TPM.
     """
     if not knowledge:
         return [{"type": "text", "text": "You are a helpful assistant."}]
@@ -276,9 +286,6 @@ Professional but accessible. Patient. Focus on what CAN be done.
 After every response ask yourself: does the user know exactly what to do next?
 """
 
-    # Two content blocks:
-    # 1. Instructions (smaller, not cached — may change more often)
-    # 2. Knowledge base docs + company context (large, static — CACHED)
     return [
         {
             "type": "text",
@@ -288,31 +295,22 @@ After every response ask yourself: does the user know exactly what to do next?
             "type": "text",
             "text": f"{company_section}\n\n## ASPIRE CLOUD DOCUMENTATION\n\n{docs_section}",
             # cache_control tells Anthropic to cache everything up to this point.
-            # Cached tokens don't count against the input TPM limit, which is
-            # the root cause of the RateLimitErrors with the Free Tier 10K TPM cap.
+            # Cached tokens are billed at ~10% of normal input token cost.
             "cache_control": {"type": "ephemeral"},
         },
     ]
 
 
 # ── Constants ────────────────────────────────────────────────────────────────
-
-# Haiku has higher TPM limits than Sonnet on Tier 1 (50K vs 30K input TPM)
-# and is more cost-efficient for short knowledge agent responses.
 MODEL = "claude-haiku-4-5-20251001"
-
-# 2048 avoids truncated responses. You only pay for tokens actually generated,
-# so raising this limit doesn't increase cost when answers are short.
 MAX_TOKENS = 2048
-
-# Keep only the last N messages in the conversation history sent to the API.
-# Older turns are dropped to prevent token accumulation across long sessions.
-# 10 messages = 5 back-and-forth exchanges, enough context for follow-ups.
 MAX_HISTORY = 10
-
-# Retry settings for transient rate limit errors.
 MAX_RETRIES = 3
 RETRY_BASE_DELAY = 2  # seconds; doubles each attempt (2 → 4 → 8)
+
+# Set to True to show token usage after each response (useful for cost monitoring).
+# Set to False once you've confirmed caching is working correctly.
+DEBUG_TOKENS = st.secrets.get("DEBUG_TOKENS", True)
 
 
 # ── Suggested questions ───────────────────────────────────────────────────────
@@ -328,42 +326,68 @@ SUGGESTED_QUESTIONS = [
 def send_message(prompt: str, system_prompt: list):
     """
     Send a message to Claude with:
-    - Prompt caching on the system prompt (via content blocks built above)
+    - Prompt caching via the beta prompt_caching client (explicit beta header)
     - Conversation history limited to MAX_HISTORY messages
     - Retry with exponential backoff on rate limit errors
+    - Token usage logging to verify cache is working
     """
     st.session_state.messages.append({"role": "user", "content": prompt})
 
-    # Trim history before sending: keep only the most recent MAX_HISTORY messages.
-    # This prevents token accumulation across long sessions while preserving
-    # enough context for follow-up questions.
     trimmed_messages = st.session_state.messages[-MAX_HISTORY:]
 
+    # Use beta.prompt_caching client to ensure the cache_control blocks
+    # are processed correctly. This adds the required beta header automatically.
     client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
 
     for attempt in range(MAX_RETRIES):
         try:
-            with client.messages.stream(
+            # ── Non-streaming call so we can read usage stats ──────────────
+            # We switch from stream() to create() here because the streaming
+            # response doesn't expose usage.cache_read_input_tokens easily.
+            # For typical knowledge agent responses this is fast enough.
+            response = client.beta.prompt_caching.messages.create(
                 model=MODEL,
                 max_tokens=MAX_TOKENS,
                 system=system_prompt,
                 messages=trimmed_messages,
-            ) as stream:
-                response_text = ""
-                for text in stream.text_stream:
-                    response_text += text
+            )
+
+            response_text = response.content[0].text
+
+            # ── Token usage logging ────────────────────────────────────────
+            # cache_creation_input_tokens > 0 → cache was written (first call)
+            # cache_read_input_tokens > 0     → cache was hit (subsequent calls)
+            # If cache_read is always 0, caching is not working.
+            usage = response.usage
+            cache_created = getattr(usage, "cache_creation_input_tokens", 0) or 0
+            cache_read    = getattr(usage, "cache_read_input_tokens", 0) or 0
+            input_tokens  = getattr(usage, "input_tokens", 0) or 0
+            output_tokens = getattr(usage, "output_tokens", 0) or 0
+
+            print(
+                f"[TOKEN USAGE] "
+                f"input={input_tokens} | "
+                f"output={output_tokens} | "
+                f"cache_created={cache_created} | "
+                f"cache_read={cache_read}"
+            )
+
+            # Store usage in session state so we can display it in the UI
+            st.session_state.last_token_usage = {
+                "input": input_tokens,
+                "output": output_tokens,
+                "cache_created": cache_created,
+                "cache_read": cache_read,
+            }
 
             st.session_state.messages.append({"role": "assistant", "content": response_text})
             return  # success — exit the retry loop
 
         except anthropic.RateLimitError:
             if attempt < MAX_RETRIES - 1:
-                # Exponential backoff: wait 2s, then 4s, then 8s before retrying.
-                # The spinner stays visible so the user knows the app is working.
                 delay = RETRY_BASE_DELAY * (2 ** attempt)
                 time.sleep(delay)
                 continue
-            # All retries exhausted
             st.session_state.messages.pop()
             st.session_state.error_message = (
                 "⏳ The system is temporarily busy. Please wait a moment and try again."
@@ -442,6 +466,8 @@ if "error_message" not in st.session_state:
     st.session_state.error_message = None
 if "pending_question" not in st.session_state:
     st.session_state.pending_question = None
+if "last_token_usage" not in st.session_state:
+    st.session_state.last_token_usage = None
 
 # ── Suggested questions (only show when no conversation yet) ─────────────────
 if not st.session_state.messages and not st.session_state.pending_question:
@@ -458,7 +484,22 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# ── Show error message if any (after history so it appears at the bottom) ────
+# ── Token usage debug panel (shown after last assistant message) ──────────────
+if DEBUG_TOKENS and st.session_state.last_token_usage:
+    u = st.session_state.last_token_usage
+    cache_status = "✅ cache HIT" if u["cache_read"] > 0 else ("🔄 cache WRITTEN" if u["cache_created"] > 0 else "❌ no cache")
+    st.markdown(f"""
+    <div class="token-debug">
+        🔍 <strong>Token usage</strong> &nbsp;|&nbsp;
+        input: {u['input']:,} &nbsp;|&nbsp;
+        output: {u['output']:,} &nbsp;|&nbsp;
+        cache_created: {u['cache_created']:,} &nbsp;|&nbsp;
+        cache_read: {u['cache_read']:,} &nbsp;|&nbsp;
+        {cache_status}
+    </div>
+    """, unsafe_allow_html=True)
+
+# ── Show error message if any ─────────────────────────────────────────────────
 if st.session_state.error_message:
     st.warning(st.session_state.error_message)
     st.session_state.error_message = None
@@ -490,4 +531,5 @@ if prompt := st.chat_input("Ask about any Aspire Cloud module..."):
 if st.session_state.messages:
     if st.button("🗑️  New conversation"):
         st.session_state.messages = []
+        st.session_state.last_token_usage = None
         st.rerun()
